@@ -1,0 +1,1 @@
+"""Stitch Mail service plugin."""

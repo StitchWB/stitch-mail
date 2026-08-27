@@ -1,0 +1,144 @@
+{
+  "schema": "stitch.plugin/v2",
+  "id": "stitch-mail",
+  "name": "Stitch Mail",
+  "version": "0.1.0",
+  "service": "mail",
+  "kind": "service",
+  "engine": {
+    "min": "0.3.0",
+    "api": 2
+  },
+  "depends": [],
+  "entry": {
+    "module": "stitch_mail"
+  },
+  "capabilities": [],
+  "outputs": [],
+  "signature": "",
+  "contributions": {
+    "spi": [
+      "MailInboxSPI",
+      "EmailVerificationProvider"
+    ],
+    "commands": [
+      {
+        "name": "generate_from_settings",
+        "readonly": true
+      },
+      {
+        "name": "generate_from_settings_persistent",
+        "readonly": false
+      },
+      {
+        "name": "test_strategies",
+        "readonly": false
+      },
+      {
+        "name": "connect",
+        "readonly": false
+      },
+      {
+        "name": "disconnect",
+        "readonly": false
+      },
+      {
+        "name": "list",
+        "readonly": true
+      },
+      {
+        "name": "list_folders",
+        "readonly": true
+      },
+      {
+        "name": "get_by_id",
+        "readonly": true
+      },
+      {
+        "name": "wait_for_email",
+        "readonly": true
+      },
+      {
+        "name": "mark_as_read",
+        "readonly": false
+      },
+      {
+        "name": "delete",
+        "readonly": false
+      },
+      {
+        "name": "create_mailtm_account",
+        "readonly": false
+      },
+      {
+        "name": "get_capabilities",
+        "readonly": true
+      },
+      {
+        "name": "get_provider_catalog",
+        "readonly": true
+      },
+      {
+        "name": "list_profiles",
+        "readonly": true
+      },
+      {
+        "name": "get_profile",
+        "readonly": true
+      },
+      {
+        "name": "upsert_profile",
+        "readonly": false
+      },
+      {
+        "name": "delete_profile",
+        "readonly": false
+      },
+      {
+        "name": "connect_profile",
+        "readonly": true
+      },
+      {
+        "name": "get_sync_state",
+        "readonly": true
+      },
+      {
+        "name": "upsert_sync_state",
+        "readonly": false
+      }
+    ],
+    "ui": {
+      "kind": "core_page",
+      "tabs": [
+        {
+          "id": "mail",
+          "label": "stitch-mail.tab",
+          "icon": "Mail",
+          "page": "main"
+        }
+      ]
+    },
+    "i18n": {
+      "ru": {
+        "stitch-mail": {
+          "title": "Почта",
+          "tab": "Почта"
+        }
+      },
+      "en": {
+        "stitch-mail": {
+          "title": "Mail",
+          "tab": "Mail"
+        }
+      }
+    },
+    "storage": {
+      "sqlite": true,
+      "migrations": "raw_sql"
+    }
+  },
+  "generated_by": {
+    "tool": "stitch_plugin_tools",
+    "scaffold": 3
+  }
+}
