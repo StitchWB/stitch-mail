@@ -1,7 +1,7 @@
 # _vendored_from: autoreg/plugin/rpc.py — do not edit; regenerate via stitch_plugin_tools dev-install
 
 from __future__ import annotations
-_VENDOR_SOURCE_SHA256 = "7ab0aed3ac50c42b510c3372bb28a813779ece19e80fd38dd8ae0b1772e4f49b"
+_VENDOR_SOURCE_SHA256 = "5de83ec0299c8dad805477f7429c9a10c196773192756df77eb1fdb7dd016dc1"
 
 import json
 import sys
@@ -228,7 +228,21 @@ class RpcPluginServer:
         internal buffering swallowing lines.  Before reading the next
         line, any lines queued by ``call_host`` (host→plugin requests
         that arrived while waiting for a host response) are processed.
+
+        Stdin/stdout are reconfigured to UTF-8 first: on Windows they
+        default to the console codepage (cp1251 etc.), where the first
+        non-ASCII response or request param kills the child with a
+        UnicodeEncodeError/UnicodeDecodeError while the host-side pipe
+        speaks UTF-8 anyway.
         """
+        for stream in (sys.stdin, sys.stdout):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is None:
+                continue
+            try:
+                reconfigure(encoding="utf-8")
+            except (OSError, ValueError):
+                pass
         while True:
             # Process lines queued by call_host before reading new ones.
             while self._queued_lines:
