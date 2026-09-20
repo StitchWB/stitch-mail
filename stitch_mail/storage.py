@@ -36,10 +36,16 @@ def migrate(db_path: str) -> None:
         credentials_json, owner_id, created_at, updated_at).
       - mail_sync_states: per-profile sync state (profile_id, status,
         last_sync_at).
-      - mail_counters: per-provider persistent email counter.
+      - mail_counters: per-(provider, strategy) persistent email counter.
     """
     conn = _connect(db_path)
     try:
+        counter_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(mail_counters)").fetchall()
+        }
+        if counter_cols and "strategy" not in counter_cols:
+            conn.execute("ALTER TABLE mail_counters RENAME TO mail_counters_v1")
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS mail_profiles (
@@ -58,12 +64,24 @@ def migrate(db_path: str) -> None:
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS mail_counters (
-                provider TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                strategy TEXT NOT NULL DEFAULT 'default',
                 counter INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (provider, strategy)
             );
             """
         )
+        if counter_cols and "strategy" not in counter_cols:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO mail_counters
+                    (provider, strategy, counter, updated_at)
+                SELECT provider, 'default', counter, updated_at
+                FROM mail_counters_v1
+                """
+            )
+            conn.execute("DROP TABLE mail_counters_v1")
         conn.commit()
     finally:
         conn.close()
@@ -181,6 +199,34 @@ def delete_profile(
         conn.close()
 
 
+def claim_profile(
+    db_path: str, profile_id: str, owner_id: int
+) -> dict[str, Any]:
+    """Assign *owner_id* to a shared (NULL-owner) profile.
+
+    Raises ValueError when the profile does not exist or already has an
+    owner — claiming never transfers ownership between users.
+    """
+    now = datetime.now(UTC).isoformat()
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT owner_id FROM mail_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"profile not found: {profile_id}")
+        if row["owner_id"] is not None:
+            raise ValueError(f"profile already owned: {profile_id}")
+        conn.execute(
+            "UPDATE mail_profiles SET owner_id = ?, updated_at = ? WHERE id = ?",
+            (owner_id, now, profile_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"success": True}
+
+
 # ── Sync states ───────────────────────────────────────────────────────────────
 
 
@@ -244,24 +290,57 @@ def upsert_sync_state(
 # ── Counters ─────────────────────────────────────────────────────────────────
 
 
-def increment_counter(db_path: str, provider: str = "default") -> int:
+def increment_counter(
+    db_path: str, provider: str = "default", strategy: str = "default"
+) -> int:
     conn = _connect(db_path)
     try:
         conn.execute(
             """
-            INSERT INTO mail_counters (provider, counter, updated_at)
-            VALUES (?, 1, datetime('now'))
-            ON CONFLICT(provider) DO UPDATE SET
+            INSERT INTO mail_counters (provider, strategy, counter, updated_at)
+            VALUES (?, ?, 1, datetime('now'))
+            ON CONFLICT(provider, strategy) DO UPDATE SET
                 counter = mail_counters.counter + 1,
                 updated_at = datetime('now')
             """,
-            (provider,),
+            (provider, strategy),
         )
         conn.commit()
         row = conn.execute(
-            "SELECT counter FROM mail_counters WHERE provider = ?", (provider,)
+            "SELECT counter FROM mail_counters WHERE provider = ? AND strategy = ?",
+            (provider, strategy),
         ).fetchone()
         return int(row["counter"]) if row else 0
+    finally:
+        conn.close()
+
+
+def get_counter(db_path: str, provider: str, strategy: str) -> int:
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT counter FROM mail_counters WHERE provider = ? AND strategy = ?",
+            (provider, strategy),
+        ).fetchone()
+        return int(row["counter"]) if row else 0
+    finally:
+        conn.close()
+
+
+def set_counter(db_path: str, provider: str, strategy: str, value: int) -> None:
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO mail_counters (provider, strategy, counter, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(provider, strategy) DO UPDATE SET
+                counter = excluded.counter,
+                updated_at = datetime('now')
+            """,
+            (provider, strategy, value),
+        )
+        conn.commit()
     finally:
         conn.close()
 

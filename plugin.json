@@ -105,6 +105,18 @@
       {
         "name": "upsert_sync_state",
         "readonly": false
+      },
+      {
+        "name": "get_email_counter",
+        "readonly": true
+      },
+      {
+        "name": "set_email_counter",
+        "readonly": false
+      },
+      {
+        "name": "claim_email_inbox_profile",
+        "readonly": false
       }
     ],
     "ui": {

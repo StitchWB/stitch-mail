@@ -13,7 +13,10 @@ Protocol methods handled by ``RpcPluginServer``:
 
 Commands mirror the current ``email_*``/``email_inbox_*`` built-in
 command names (stripped of prefix) so the dual-format proxy can route
-to them when the plugin is installed and healthy.  The
+to them when the plugin is installed and healthy.  Three commands keep
+their bare names unchanged (``get_email_counter``,
+``set_email_counter``, ``claim_email_inbox_profile``) — the built-ins
+behind them were removed in the plugin migration.  The
 ``list_profiles`` command returns a plugin-served marker so the e2e
 test can verify the SPI proxy chain (host → RPC → plugin → marker).
 """
@@ -266,6 +269,48 @@ def _handle_upsert_sync_state(params: dict[str, Any]) -> dict[str, Any]:
     return storage.upsert_sync_state(ctx.db_path, input_data, owner_id=_uid(params))
 
 
+# ── Bare commands (removed email_counter / claim built-ins) ──────────────────
+
+
+def _handle_get_email_counter(params: dict[str, Any]) -> int:
+    """Counter for a provider+strategy pair (mirrors get_email_counter)."""
+    provider = str(params.get("provider") or "").strip()
+    strategy = str(params.get("strategy") or "").strip()
+    if not ctx.db_path or not provider or not strategy:
+        return 0
+    return storage.get_counter(ctx.db_path, provider, strategy)
+
+
+def _handle_set_email_counter(params: dict[str, Any]) -> dict[str, Any]:
+    """Set a provider+strategy counter (mirrors set_email_counter).
+
+    The RPC layer reserves the ``error`` result key, so validation
+    failures surface as ``{"success": False}`` without a message.
+    """
+    provider = str(params.get("provider") or "").strip()
+    strategy = str(params.get("strategy") or "").strip()
+    if not provider or not strategy or not ctx.db_path:
+        return {"success": False}
+    value = int(params.get("counter", params.get("value", 0)))
+    storage.set_counter(ctx.db_path, provider, strategy, value)
+    return {"success": True}
+
+
+def _handle_claim_email_inbox_profile(params: dict[str, Any]) -> dict[str, Any]:
+    """Claim a shared profile for the caller (mirrors claim_email_inbox_profile)."""
+    uid = _uid(params)
+    if uid is None:
+        raise ValueError("authentication required to claim a shared profile")
+    pid = str(
+        params.get("profile_id") or params.get("profileId") or params.get("id") or ""
+    )
+    if not pid:
+        raise ValueError("profile id is required")
+    if not ctx.db_path:
+        raise ValueError("plugin storage not initialised")
+    return storage.claim_profile(ctx.db_path, pid, uid)
+
+
 # ── Server entry point ────────────────────────────────────────────────────
 
 
@@ -301,6 +346,10 @@ def main() -> None:
     server.register("connect_profile", _handle_connect_profile)
     server.register("get_sync_state", _handle_get_sync_state)
     server.register("upsert_sync_state", _handle_upsert_sync_state)
+    # Bare commands (removed email_counter / claim built-ins)
+    server.register("get_email_counter", _handle_get_email_counter)
+    server.register("set_email_counter", _handle_set_email_counter)
+    server.register("claim_email_inbox_profile", _handle_claim_email_inbox_profile)
     server.serve()
 
 
