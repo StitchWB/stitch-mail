@@ -1,7 +1,7 @@
 # _vendored_from: autoreg/plugin/rpc.py — do not edit; regenerate via stitch_plugin_tools dev-install
 
 from __future__ import annotations
-_VENDOR_SOURCE_SHA256 = "5de83ec0299c8dad805477f7429c9a10c196773192756df77eb1fdb7dd016dc1"
+_VENDOR_SOURCE_SHA256 = "0918f69210eedb9789b89eec9f1ed51a42f0a9ec4fc7b9ed048a0b8c7292b749"
 
 import json
 import sys
@@ -78,13 +78,7 @@ class RpcPluginServer:
         # Reverse RPC state.
         self._request_handlers: dict[str, Any] = {}
         self._next_request_id = 1
-        # N6: guard the id counter with a lock.  The serve loop is
-        # single-threaded (only one ``call_host`` can be in flight at a
-        # time because it blocks the serve loop reading stdin), so in
-        # practice the counter is never contended.  The lock makes that
-        # invariant explicit and protects against future re-entrancy
-        # (e.g. a signal handler or a nested event loop) corrupting the
-        # counter via a torn read-modify-write.
+        # Lock guards the id counter from re-entrancy (signal/nested loop) tearing its read-modify-write.
         self._request_id_lock = threading.Lock()
         self._queued_lines: list[str] = []
 
