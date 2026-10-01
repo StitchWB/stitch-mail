@@ -152,5 +152,77 @@
   "generated_by": {
     "tool": "stitch_plugin_tools",
     "scaffold": 3
-  }
+  },
+  "description": {
+    "ru": "Почтовый сервис: профили ящиков в SQLite с привязкой к пользователю, IMAP-сессии, ожидание писем и создание аккаунтов Mail.tm. Реализует SPI MailInboxSPI/EmailVerificationProvider для авторегистрации и добавляет вкладку «Почта».",
+    "en": "Mail service: per-user mailbox profiles in SQLite, IMAP sessions, wait-for-email and Mail.tm account creation. Implements the MailInboxSPI/EmailVerificationProvider SPI for auto-registration and adds a Mail tab."
+  },
+  "author": "WhiteBite",
+  "category": "communication",
+  "status": "beta",
+  "icon": "✉️",
+  "features": [
+    {
+      "title": {
+        "ru": "Профили ящиков: CRUD, привязка к пользователю, claim общих профилей",
+        "en": "Mailbox profiles: CRUD, per-user ownership, claiming shared profiles"
+      },
+      "status": "stable"
+    },
+    {
+      "title": {
+        "ru": "SPI MailInboxSPI и EmailVerificationProvider для хоста и авторегеров",
+        "en": "MailInboxSPI and EmailVerificationProvider SPI for the host and auto-registration"
+      },
+      "status": "stable"
+    },
+    {
+      "title": {
+        "ru": "IMAP-команды сессии: connect, list, wait_for_email, mark_as_read, delete",
+        "en": "IMAP session commands: connect, list, wait_for_email, mark_as_read, delete"
+      },
+      "status": "beta"
+    },
+    {
+      "title": {
+        "ru": "Создание аккаунтов Mail.tm",
+        "en": "Mail.tm account creation"
+      },
+      "status": "beta"
+    },
+    {
+      "title": {
+        "ru": "Счётчики email по провайдеру и стратегии",
+        "en": "Email counters per provider and strategy"
+      },
+      "status": "stable"
+    },
+    {
+      "title": {
+        "ru": "Вкладка «Почта» на главной странице",
+        "en": "Mail tab on the main page"
+      },
+      "status": "stable"
+    }
+  ],
+  "changelog": [
+    {
+      "version": "0.1.0",
+      "date": "2026-08-22",
+      "changes": [
+        {
+          "ru": "Профили ящиков и SPI-прокси почты",
+          "en": "Mailbox profiles and mail SPI proxy"
+        },
+        {
+          "ru": "Зеркалирование команд email_* и email_inbox_* из ядра",
+          "en": "Mirrored email_* and email_inbox_* commands from core"
+        },
+        {
+          "ru": "Счётчики email и claim общих профилей",
+          "en": "Email counters and shared-profile claiming"
+        }
+      ]
+    }
+  ]
 }
