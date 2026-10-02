@@ -12,33 +12,4 @@ concurrency:
 
 jobs:
   checks:
-    name: Lint + compile + manifest
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install ruff
-        run: pip install ruff
-
-      - name: Ruff
-        run: ruff check . --config ruff.toml
-
-      - name: Compile check
-        run: python -m compileall -q stitch_mail
-
-      - name: Validate manifest
-        run: |
-          python - <<'PY'
-          import json
-          m = json.load(open('plugin.json', encoding='utf-8'))
-          for field in ('schema', 'id', 'name', 'version', 'service', 'kind', 'engine', 'entry'):
-              assert field in m, f'missing manifest field: {field}'
-          assert m['kind'] == 'service', f"expected kind=service, got {m['kind']}"
-          assert m['id'] == 'stitch-mail', f"unexpected id {m['id']}"
-          print('manifest OK:', m['id'], m['version'])
-          PY
+    uses: StitchWB/.github/.github/workflows/plugin-ci.yml@main
