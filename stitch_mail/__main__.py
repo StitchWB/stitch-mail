@@ -16,9 +16,7 @@ command names (stripped of prefix) so the dual-format proxy can route
 to them when the plugin is installed and healthy.  Three commands keep
 their bare names unchanged (``get_email_counter``,
 ``set_email_counter``, ``claim_email_inbox_profile``) — the built-ins
-behind them were removed in the plugin migration.  The
-``list_profiles`` command returns a plugin-served marker so the e2e
-test can verify the SPI proxy chain (host → RPC → plugin → marker).
+behind them were removed in the plugin migration.
 """
 
 # _generated_by: stitch_plugin_tools scaffold v3
@@ -86,25 +84,14 @@ def _handle_migrate_db(params: dict[str, Any]) -> dict[str, Any]:
 
 
 # ── SPI-served commands (proxy targets for spi_bridge) ─────────────────────
-#
-# These are the SPI methods the host-side spi_bridge proxy calls over RPC.
-# ``list_profiles`` returns a plugin-served marker so the e2e test can
-# verify the proxy chain.  ``wait_otp`` and ``sync`` are graceful
-# no-ops in the plugin-only proof (real IMAP wiring arrives in todo 16+).
+# wait_otp/sync stay no-ops until real IMAP wiring lands (todo 16+).
 
 
 def _handle_list_profiles(params: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return mail profiles from local storage.
-
-    When the plugin DB has no profiles (fresh install), returns a
-    plugin-served marker so the SPI proxy chain can be verified in e2e.
-    """
+    """Return mail profiles from local storage (empty list on a fresh DB)."""
     if not ctx.db_path:
-        return [{"id": "plugin-served-marker", "source": "stitch-mail"}]
-    rows = storage.list_profiles(ctx.db_path, owner_id=_uid(params))
-    if not rows:
-        return [{"id": "plugin-served-marker", "source": "stitch-mail"}]
-    return rows
+        return []
+    return storage.list_profiles(ctx.db_path, owner_id=_uid(params))
 
 
 def _handle_wait_otp(params: dict[str, Any]) -> str:
@@ -236,7 +223,7 @@ def _handle_upsert_profile(params: dict[str, Any]) -> dict[str, Any]:
     """Create or update an inbox profile (mirrors email_inbox_upsert_profile)."""
     input_data = params.get("input", params)
     if not ctx.db_path:
-        return {"id": "stub", "email": str(input_data.get("email", ""))}
+        raise ValueError("plugin storage not initialised")
     return storage.upsert_profile(ctx.db_path, input_data, owner_id=_uid(params))
 
 

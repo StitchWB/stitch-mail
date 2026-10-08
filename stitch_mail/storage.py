@@ -33,7 +33,9 @@ def migrate(db_path: str) -> None:
 
     Tables:
       - mail_profiles: mirror cache of inbox profiles (id, email, provider,
-        credentials_json, owner_id, created_at, updated_at).
+        credentials_json, label, account_id, connect_input_json, owner_id,
+        created_at, updated_at).  Rows written by older plugin versions
+        (label/account_id/connect_input_json missing) are backfilled here.
       - mail_sync_states: per-profile sync state (profile_id, status,
         last_sync_at).
       - mail_counters: per-(provider, strategy) persistent email counter.
@@ -46,6 +48,10 @@ def migrate(db_path: str) -> None:
         }
         if counter_cols and "strategy" not in counter_cols:
             conn.execute("ALTER TABLE mail_counters RENAME TO mail_counters_v1")
+        profile_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(mail_profiles)").fetchall()
+        }
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS mail_profiles (
@@ -53,6 +59,9 @@ def migrate(db_path: str) -> None:
                 email TEXT NOT NULL DEFAULT '',
                 provider TEXT NOT NULL DEFAULT 'imap',
                 credentials_json TEXT NOT NULL DEFAULT '{}',
+                label TEXT NOT NULL DEFAULT '',
+                account_id TEXT NOT NULL DEFAULT '',
+                connect_input_json TEXT NOT NULL DEFAULT '',
                 owner_id INTEGER,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -72,6 +81,12 @@ def migrate(db_path: str) -> None:
             );
             """
         )
+        for col in ("label", "account_id", "connect_input_json"):
+            if profile_cols and col not in profile_cols:
+                conn.execute(
+                    f"ALTER TABLE mail_profiles ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"
+                )
+        _backfill_profiles(conn)
         if counter_cols and "strategy" not in counter_cols:
             conn.execute(
                 """
@@ -85,6 +100,40 @@ def migrate(db_path: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _backfill_profiles(conn: sqlite3.Connection) -> None:
+    """Derive label/account_id/connect_input_json for legacy rows.
+
+    credentials_json holds the bare credentials value; unparsable or
+    non-dict payloads fall back to an empty value.
+    """
+    rows = conn.execute(
+        "SELECT id, email, provider, credentials_json, label, account_id, "
+        "connect_input_json FROM mail_profiles "
+        "WHERE label = '' OR account_id = '' OR connect_input_json = ''"
+    ).fetchall()
+    for row in rows:
+        email = str(row["email"])
+        provider = str(row["provider"])
+        label = str(row["label"]) or email
+        account_id = str(row["account_id"]) or f"{provider}:{email}"
+        connect_input_json = str(row["connect_input_json"]) or json.dumps(
+            {
+                "provider": provider,
+                "accountId": account_id,
+                "credentials": {
+                    "type": provider,
+                    "value": _load_json_dict(row["credentials_json"]),
+                },
+                "options": None,
+            }
+        )
+        conn.execute(
+            "UPDATE mail_profiles SET label = ?, account_id = ?, "
+            "connect_input_json = ? WHERE id = ?",
+            (label, account_id, connect_input_json, row["id"]),
+        )
 
 
 # ── Visibility helpers (mirror stitch-totp fetch_visible pattern) ────────────
@@ -119,7 +168,7 @@ def list_profiles(db_path: str, owner_id: int | None = None) -> list[dict[str, A
             f"SELECT * FROM mail_profiles WHERE {where} ORDER BY updated_at DESC",
             args,
         ).fetchall()
-        return [_row_to_profile(r) for r in rows]
+        return [_row_to_profile(r, owner_id) for r in rows]
     finally:
         conn.close()
 
@@ -130,7 +179,7 @@ def get_profile(
     conn = _connect(db_path)
     try:
         row = _fetch_visible(conn, profile_id, owner_id)
-        return _row_to_profile(row) if row else None
+        return _row_to_profile(row, owner_id) if row else None
     finally:
         conn.close()
 
@@ -140,17 +189,24 @@ def upsert_profile(
 ) -> dict[str, Any]:
     """Create or update a profile, stamping the CALLER's owner_id.
 
-    New rows get owner_id = caller (None for guest → shared/NULL).  On
-    conflict, the existing owner_id is preserved (never overwritten from
-    the request body) and the update is only allowed when the existing
-    row is visible to the caller (shared or owned) — mirroring totp
-    update_key semantics.
+    Accepts the frontend upsert shape ``{id?, label?, connectInput}`` and
+    the legacy ``{id?, email, provider, credentials}`` shape; both are
+    persisted to the full column set and the full contract row is
+    returned.  New rows get owner_id = caller (None for guest →
+    shared/NULL).  On conflict, the existing owner_id is preserved
+    (never overwritten from the request body) and the update is only
+    allowed when the existing row is visible to the caller (shared or
+    owned) — mirroring totp update_key semantics.
     """
     pid = str(data.get("id") or data.get("profileId") or uuid.uuid4().hex[:12])
-    email = str(data.get("email", ""))
-    provider = str(data.get("provider", "imap"))
-    creds = data.get("credentials", data.get("credentialsJson", {}))
-    creds_json = json.dumps(creds) if isinstance(creds, dict) else str(creds)
+    connect_input = _extract_connect_input(data)
+    provider = str(connect_input.get("provider", "imap"))
+    account_id = str(connect_input.get("accountId", ""))
+    creds_type, creds_value = _split_credentials(provider, connect_input.get("credentials"))
+    creds_json = json.dumps(creds_value)
+    email = str(data.get("email") or _email_from_credentials(creds_type, creds_value))
+    connect_input_json = json.dumps(connect_input)
+    input_label = data.get("label")
     now = datetime.now(UTC).isoformat()
     conn = _connect(db_path)
     try:
@@ -162,24 +218,51 @@ def upsert_profile(
             ).fetchone()
             if exists:
                 raise ValueError(f"profile not visible to caller: {pid}")
+            raw_label = input_label if input_label is not None else ""
+        else:
+            raw_label = input_label if input_label is not None else existing["label"]
+        label = str(raw_label or "").strip() or email or account_id or pid
+        if existing is None:
             # New row: stamp caller's owner_id (None for guest = shared).
             conn.execute(
                 "INSERT INTO mail_profiles "
-                "(id, email, provider, credentials_json, owner_id, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (pid, email, provider, creds_json, owner_id, now),
+                "(id, email, provider, credentials_json, label, account_id, "
+                "connect_input_json, owner_id, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    pid,
+                    email,
+                    provider,
+                    creds_json,
+                    label,
+                    account_id,
+                    connect_input_json,
+                    owner_id,
+                    now,
+                ),
             )
         else:
             # Existing visible row: update, preserve owner_id.
             conn.execute(
                 "UPDATE mail_profiles SET email = ?, provider = ?, "
-                "credentials_json = ?, updated_at = ? WHERE id = ?",
-                (email, provider, creds_json, now, pid),
+                "credentials_json = ?, label = ?, account_id = ?, "
+                "connect_input_json = ?, updated_at = ? WHERE id = ?",
+                (
+                    email,
+                    provider,
+                    creds_json,
+                    label,
+                    account_id,
+                    connect_input_json,
+                    now,
+                    pid,
+                ),
             )
         conn.commit()
+        row = _fetch_visible(conn, pid, owner_id)
     finally:
         conn.close()
-    return {"id": pid, "email": email, "provider": provider}
+    return _row_to_profile(row, owner_id)
 
 
 def delete_profile(
@@ -348,12 +431,83 @@ def set_counter(db_path: str, provider: str, strategy: str, value: int) -> None:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _row_to_profile(row: sqlite3.Row) -> dict[str, Any]:
+def _load_json_dict(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _extract_connect_input(data: dict[str, Any]) -> dict[str, Any]:
+    """Frontend ``connectInput`` when present, else the legacy shape
+    reconstructed from email/provider/credentials."""
+    ci = data.get("connectInput", data.get("connect_input"))
+    if isinstance(ci, dict) and ci:
+        return ci
+    provider = str(data.get("provider", "imap"))
+    email = str(data.get("email", ""))
+    creds_type, creds_value = _split_credentials(
+        provider, data.get("credentials", data.get("credentialsJson", {}))
+    )
+    return {
+        "provider": provider,
+        "accountId": f"{provider}:{email}" if email else "",
+        "credentials": {"type": creds_type, "value": creds_value},
+        "options": None,
+    }
+
+
+def _split_credentials(provider: str, creds: Any) -> tuple[str, dict[str, Any]]:
+    """Split a credentials payload into (type, bare value dict).
+
+    Accepts the wrapped ``{type, value}`` form and the bare value form;
+    anything else degrades to an empty value.
+    """
+    if isinstance(creds, dict) and isinstance(creds.get("value"), dict):
+        return str(creds.get("type") or provider), creds["value"]
+    value = creds if isinstance(creds, dict) else {}
+    return provider, value
+
+
+def _email_from_credentials(provider: str, value: dict[str, Any]) -> str:
+    if provider == "mail_tm":
+        return str(value.get("address", ""))
+    return str(value.get("username", ""))
+
+
+def _row_connect_input(row: sqlite3.Row) -> dict[str, Any]:
+    raw = row["connect_input_json"]
+    if raw:
+        ci = _load_json_dict(raw)
+        if ci:
+            return ci
+    provider = str(row["provider"])
+    email = str(row["email"])
+    account_id = str(row["account_id"]) or f"{provider}:{email}"
+    return {
+        "provider": provider,
+        "accountId": account_id,
+        "credentials": {
+            "type": provider,
+            "value": _load_json_dict(row["credentials_json"]),
+        },
+        "options": None,
+    }
+
+
+def _row_to_profile(row: sqlite3.Row, uid: int | None = None) -> dict[str, Any]:
+    owner = row["owner_id"]
     return {
         "id": row["id"],
-        "email": row["email"],
+        "label": row["label"] or row["email"] or row["account_id"],
         "provider": row["provider"],
-        "owner_id": row["owner_id"],
+        "accountId": row["account_id"] or f"{row['provider']}:{row['email']}",
+        "connectInput": _row_connect_input(row),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
+        "mine": uid is not None and owner == uid,
+        "shared": owner is None,
     }
