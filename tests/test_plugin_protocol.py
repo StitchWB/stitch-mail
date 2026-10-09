@@ -216,6 +216,50 @@ def test_upsert_list_profiles_mailtm_guest_shared() -> None:
     assert responses[4]["result"] == [upserted]
 
 
+def test_session_folder_catalog_stub_shapes() -> None:
+    """connect / connect_profile return the full EmailMailboxSession shape,
+    list_folders the full EmailFolder shape, and get_provider_catalog items
+    carry full capabilities — the frontend DTO contracts the dual-routed
+    commands must uphold."""
+    with tempfile.TemporaryDirectory() as td:
+        responses = _drive(
+            [
+                _request(1, "plugin.init", _init_params(td)),
+                _request(2, "plugin.call", {"name": "connect", "params": {}}),
+                _request(3, "plugin.call", {"name": "connect_profile", "params": {}}),
+                _request(4, "plugin.call", {"name": "list_folders", "params": {}}),
+                _request(5, "plugin.call", {"name": "get_provider_catalog", "params": {}}),
+                _request(6, "plugin.shutdown"),
+            ]
+        )
+
+    session_fields = {
+        "sessionId", "provider", "accountId", "capabilities", "connectedAt",
+    }
+    capability_fields = {
+        "canDelete", "canMarkAsRead", "canSearchBody",
+        "canDownloadAttachments", "canListFolders",
+    }
+    for rid in (2, 3):
+        result = responses[rid]["result"]
+        assert session_fields <= set(result), result
+        assert capability_fields <= set(result["capabilities"]), result
+
+    folders = responses[4]["result"]
+    assert folders, folders
+    for folder in folders:
+        assert {"id", "path", "name", "kind", "delimiter"} <= set(folder), folder
+
+    catalog = responses[5]["result"]
+    assert catalog, catalog
+    for item in catalog:
+        assert {
+            "provider", "displayName", "available",
+            "capabilities", "supportsProfileConnect",
+        } <= set(item), item
+        assert capability_fields <= set(item["capabilities"]), item
+
+
 def test_migrate_backfills_legacy_profile_rows() -> None:
     """Legacy rows (email/provider/credentials_json only) gain
     label/account_id/connect_input_json on migrate and list as valid

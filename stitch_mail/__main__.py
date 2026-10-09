@@ -23,6 +23,7 @@ behind them were removed in the plugin migration.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from . import storage
@@ -139,10 +140,31 @@ def _handle_test_strategies(params: dict[str, Any]) -> list:
 
 # ── Mirrored email_inbox_* session commands ────────────────────────────────
 
+#: ProviderCapabilities camelCase shape shared by sessions and the catalog.
+_CAPABILITIES: dict[str, bool] = {
+    "canDelete": True,
+    "canMarkAsRead": True,
+    "canSearchBody": True,
+    "canDownloadAttachments": False,
+    "canListFolders": True,
+}
+
+
+def _stub_session() -> dict[str, Any]:
+    """EmailMailboxSession-shaped stub (sessionId/provider/accountId/
+    capabilities/connectedAt)."""
+    return {
+        "sessionId": "plugin-session",
+        "provider": "imap",
+        "accountId": "plugin-stub",
+        "capabilities": dict(_CAPABILITIES),
+        "connectedAt": datetime.now(UTC).isoformat(),
+    }
+
 
 def _handle_connect(params: dict[str, Any]) -> dict[str, Any]:
     """Connect to a mailbox (mirrors email_inbox_connect)."""
-    return {"sessionId": "plugin-session", "connected": True}
+    return _stub_session()
 
 
 def _handle_disconnect(params: dict[str, Any]) -> dict[str, Any]:
@@ -157,7 +179,15 @@ def _handle_list(params: dict[str, Any]) -> list:
 
 def _handle_list_folders(params: dict[str, Any]) -> list:
     """List mailbox folders (mirrors email_inbox_list_folders)."""
-    return [{"name": "INBOX", "delimiter": "/"}]
+    return [
+        {
+            "id": "inbox",
+            "path": "INBOX",
+            "name": "INBOX",
+            "kind": "inbox",
+            "delimiter": "/",
+        },
+    ]
 
 
 def _handle_get_by_id(params: dict[str, Any]) -> dict[str, Any] | None:
@@ -187,13 +217,7 @@ def _handle_create_mailtm_account(params: dict[str, Any]) -> dict[str, Any]:
 
 def _handle_get_capabilities(params: dict[str, Any]) -> dict[str, Any]:
     """Get provider capabilities (mirrors email_inbox_get_capabilities)."""
-    return {
-        "canDelete": True,
-        "canMarkAsRead": True,
-        "canSearchBody": True,
-        "canDownloadAttachments": False,
-        "canListFolders": True,
-    }
+    return dict(_CAPABILITIES)
 
 
 def _handle_get_provider_catalog(params: dict[str, Any]) -> list:
@@ -203,6 +227,7 @@ def _handle_get_provider_catalog(params: dict[str, Any]) -> list:
             "provider": "imap",
             "displayName": "IMAP",
             "available": True,
+            "capabilities": dict(_CAPABILITIES),
             "supportsProfileConnect": True,
         },
     ]
@@ -237,7 +262,7 @@ def _handle_delete_profile(params: dict[str, Any]) -> bool:
 
 def _handle_connect_profile(params: dict[str, Any]) -> dict[str, Any]:
     """Connect using a saved profile (mirrors email_inbox_connect_profile)."""
-    return {"sessionId": "plugin-session", "connected": True}
+    return _stub_session()
 
 
 def _handle_get_sync_state(params: dict[str, Any]) -> dict[str, Any] | None:
