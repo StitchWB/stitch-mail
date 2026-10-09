@@ -83,6 +83,14 @@
         "readonly": true
       },
       {
+        "name": "wait_otp",
+        "readonly": true
+      },
+      {
+        "name": "sync",
+        "readonly": false
+      },
+      {
         "name": "get_profile",
         "readonly": true
       },
@@ -96,7 +104,7 @@
       },
       {
         "name": "connect_profile",
-        "readonly": true
+        "readonly": false
       },
       {
         "name": "get_sync_state",
@@ -154,8 +162,8 @@
     "scaffold": 3
   },
   "description": {
-    "ru": "Почтовый сервис: профили ящиков в SQLite с привязкой к пользователю, IMAP-сессии, ожидание писем и создание аккаунтов Mail.tm. Реализует SPI MailInboxSPI/EmailVerificationProvider для авторегистрации и добавляет вкладку «Почта».",
-    "en": "Mail service: per-user mailbox profiles in SQLite, IMAP sessions, wait-for-email and Mail.tm account creation. Implements the MailInboxSPI/EmailVerificationProvider SPI for auto-registration and adds a Mail tab."
+    "ru": "Почтовый сервис: профили ящиков в SQLite с привязкой к пользователю, счётчики email и вкладка «Почта». Реальные IMAP-сессии (connect, list, wait_for_email, mark_as_read, delete, list_folders), создание аккаунтов Mail.tm и получение OTP через опрос IMAP-профиля (лимит ожидания 25 с под 30-секундным лимитом хоста); SPI MailInboxSPI/EmailVerificationProvider подключён к авторегистрации.",
+    "en": "Mail service: per-user mailbox profiles in SQLite, email counters and a Mail tab. Real IMAP sessions (connect, list, wait_for_email, mark_as_read, delete, list_folders), Mail.tm account creation and OTP retrieval by polling the stored IMAP profile (25s wait cap under the host's 30s kill); the MailInboxSPI/EmailVerificationProvider SPI serves auto-registration."
   },
   "author": "WhiteBite",
   "category": "communication",
@@ -171,17 +179,17 @@
     },
     {
       "title": {
-        "ru": "SPI MailInboxSPI и EmailVerificationProvider для хоста и авторегеров",
-        "en": "MailInboxSPI and EmailVerificationProvider SPI for the host and auto-registration"
+        "ru": "SPI MailInboxSPI и EmailVerificationProvider для хоста и авторегов: wait_otp опрашивает IMAP-профиль, при отсутствии профиля хост откатывается к встроенному провайдеру",
+        "en": "MailInboxSPI and EmailVerificationProvider SPI for the host and auto-registration: wait_otp polls the stored IMAP profile; without a profile the host falls back to the built-in provider"
       },
       "status": "stable"
     },
     {
       "title": {
-        "ru": "IMAP-команды сессии: connect, list, wait_for_email, mark_as_read, delete",
-        "en": "IMAP session commands: connect, list, wait_for_email, mark_as_read, delete"
+        "ru": "IMAP-команды сессии: connect, list, wait_for_email, mark_as_read, delete, list_folders — реальный imaplib-транспорт",
+        "en": "IMAP session commands: connect, list, wait_for_email, mark_as_read, delete, list_folders — real imaplib transport"
       },
-      "status": "beta"
+      "status": "stable"
     },
     {
       "title": {

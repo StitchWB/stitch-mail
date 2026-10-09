@@ -17,16 +17,19 @@ to them when the plugin is installed and healthy.  Three commands keep
 their bare names unchanged (``get_email_counter``,
 ``set_email_counter``, ``claim_email_inbox_profile``) — the built-ins
 behind them were removed in the plugin migration.
+
+IMAP session commands and wait_otp run the real ``imaplib`` transport
+(``imap.py``); mail.tm commands run the REST client (``mailtm.py``);
+profiles live in the plugin's own SQLite store (``storage.py``).
 """
 
 # _generated_by: stitch_plugin_tools scaffold v3
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
-from . import storage
+from . import emailgen, imap, mailtm, sessions, storage
 
 try:
     from autoreg.plugin.rpc import RpcPluginServer
@@ -45,6 +48,9 @@ class _Ctx:
 
 
 ctx = _Ctx()
+
+#: wait_otp poll ceiling — the host kills plugin calls at 30s, so the poll gives up first.
+_WAIT_OTP_MAX_S = 25.0
 
 
 def _uid(params: dict[str, Any]) -> int | None:
@@ -68,8 +74,7 @@ def _handle_init(params: dict[str, Any]) -> dict[str, Any]:
         "plugin_id": params.get("plugin_id", ""),
         "db_path": ctx.db_path,
         "data_dir": ctx.data_dir,
-        # Capability negotiation: no reverse-RPC used.  Declared
-        # explicitly for contract uniformity.
+        # no reverse-RPC used; declared for contract uniformity
         "capabilities": [],
     }
 
@@ -85,7 +90,6 @@ def _handle_migrate_db(params: dict[str, Any]) -> dict[str, Any]:
 
 
 # ── SPI-served commands (proxy targets for spi_bridge) ─────────────────────
-# wait_otp/sync stay no-ops until real IMAP wiring lands (todo 16+).
 
 
 def _handle_list_profiles(params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -95,14 +99,60 @@ def _handle_list_profiles(params: dict[str, Any]) -> list[dict[str, Any]]:
     return storage.list_profiles(ctx.db_path, owner_id=_uid(params))
 
 
+def _mailbox_profile(email_addr: str, uid: int | None) -> dict[str, Any] | None:
+    """Resolve the mailbox to poll for *email_addr*.
+
+    Exact credentials-username match first; otherwise the newest
+    visible IMAP profile (the plugin-side analogue of the built-in's
+    single settings-configured mailbox).  None when no IMAP profile is
+    visible to the caller.
+    """
+    profiles = storage.list_profiles(ctx.db_path, owner_id=uid)
+    imap_profiles = [
+        p for p in profiles
+        if str((p.get("connectInput") or {}).get("provider", "imap")) == "imap"
+    ]
+    for profile in imap_profiles:
+        value = (
+            (profile["connectInput"].get("credentials") or {}).get("value") or {}
+        )
+        if str(value.get("username", "")) == email_addr:
+            return profile
+    return imap_profiles[0] if imap_profiles else None
+
+
 def _handle_wait_otp(params: dict[str, Any]) -> str:
     """Wait for a verification code/OTP for *email*.
 
-    Graceful degradation: returns an empty string when no IMAP config is
-    available (the plugin has its own credential store in mail_profiles;
-    real IMAP wiring arrives in todo 16+).
+    Resolves the mailbox from the plugin's profile store and polls it
+    with the raw-IMAP engine ported from the core built-in
+    EmailVerificationProvider.  Raises when no IMAP profile is visible
+    so the host SPI bridge falls back to the built-in EmailService.
+    The poll is capped at 25s (the host kills plugin calls at 30s); a
+    genuine timeout returns "" — long waits beyond 30s are a known
+    host contract gap (F02c/HA6).
     """
-    return ""
+    email_addr = str(params.get("email") or "")
+    if not email_addr:
+        raise ValueError("email is required")
+    if not ctx.db_path:
+        raise ValueError("plugin storage not initialised")
+    profile = _mailbox_profile(email_addr, _uid(params))
+    if profile is None:
+        raise ValueError(f"no IMAP mailbox profile for {email_addr}")
+    creds = (profile["connectInput"].get("credentials") or {}).get("value") or {}
+    subject_filter = str(params.get("subject_filter") or "")
+    timeout_s = min(float(params.get("timeout") or 120.0), _WAIT_OTP_MAX_S)
+    return imap.poll_for_code(
+        creds=creds,
+        subject_patterns=[subject_filter] if subject_filter else [],
+        body_regex=str(params.get("code_pattern") or r"\b(\d{6})\b"),
+        recency_s=int(params.get("recency_s", 600)),
+        timeout_s=timeout_s,
+        poll_interval_s=float(params.get("poll_interval_s", 5.0)),
+        code_source=str(params.get("code_source", "body")),
+        subject_code_regex=str(params.get("subject_code_regex", "")),
+    )
 
 
 def _handle_sync(params: dict[str, Any]) -> dict[str, Any]:
@@ -118,119 +168,125 @@ def _handle_sync(params: dict[str, Any]) -> dict[str, Any]:
 # ── Mirrored email_* commands ──────────────────────────────────────────────
 
 
+def _base_email(params: dict[str, Any], uid: int | None) -> str:
+    """Base address for derivation: explicit param, else the newest
+    visible IMAP profile's username."""
+    explicit = (
+        params.get("imapUser")
+        or params.get("imap_user")
+        or params.get("baseEmail")
+        or params.get("base_email")
+    )
+    if explicit:
+        return str(explicit)
+    if not ctx.db_path:
+        return ""
+    for profile in storage.list_profiles(ctx.db_path, owner_id=uid):
+        ci = profile.get("connectInput") or {}
+        if str(ci.get("provider", "imap")) == "imap":
+            value = (ci.get("credentials") or {}).get("value") or {}
+            return str(value.get("username", ""))
+    return ""
+
+
 def _handle_generate_from_settings(params: dict[str, Any]) -> dict[str, Any]:
-    """Generate email from stored settings (mirrors email_generate_from_settings)."""
-    return {"email": "plugin@example.com", "strategy": "single"}
+    """Generate email from the caller's settings (mirrors email_generate_from_settings)."""
+    return emailgen.generate_by_strategy(
+        strategy=str(params.get("strategy") or "single"),
+        base_email=_base_email(params, _uid(params)),
+        domain=params.get("domain"),
+        email_pool=params.get("emailPool") or params.get("email_pool"),
+    )
 
 
 def _handle_generate_from_settings_persistent(params: dict[str, Any]) -> dict[str, Any]:
     """Generate email with persistent counter (mirrors email_generate_from_settings_persistent)."""
     provider = str(params.get("provider", "default"))
     counter = storage.increment_counter(ctx.db_path, provider) if ctx.db_path else 0
-    return {"email": f"plugin_{counter}@example.com", "strategy": "single", "counter": counter}
+    result = emailgen.generate_by_strategy(
+        strategy=str(params.get("strategy") or "single"),
+        base_email=_base_email(params, _uid(params)),
+        domain=params.get("domain"),
+        email_pool=params.get("emailPool") or params.get("email_pool"),
+    )
+    result["counter"] = counter
+    return result
 
 
 def _handle_test_strategies(params: dict[str, Any]) -> list:
     """Test email strategies (mirrors email_test_strategies)."""
-    return [
-        ["single", {"email": "test.user@gmail.com", "strategy": "single"}],
-        ["plus_alias", {"email": "test.user+abc123@gmail.com", "strategy": "plus_alias"}],
-    ]
+    return emailgen.test_strategies()
 
 
 # ── Mirrored email_inbox_* session commands ────────────────────────────────
 
-#: ProviderCapabilities camelCase shape shared by sessions and the catalog.
-_CAPABILITIES: dict[str, bool] = {
-    "canDelete": True,
-    "canMarkAsRead": True,
-    "canSearchBody": True,
-    "canDownloadAttachments": False,
-    "canListFolders": True,
-}
 
-
-def _stub_session() -> dict[str, Any]:
-    """EmailMailboxSession-shaped stub (sessionId/provider/accountId/
-    capabilities/connectedAt)."""
-    return {
-        "sessionId": "plugin-session",
-        "provider": "imap",
-        "accountId": "plugin-stub",
-        "capabilities": dict(_CAPABILITIES),
-        "connectedAt": datetime.now(UTC).isoformat(),
-    }
+def _session_id(params: dict[str, Any]) -> str:
+    return str(params.get("sessionId") or params.get("session_id") or "")
 
 
 def _handle_connect(params: dict[str, Any]) -> dict[str, Any]:
     """Connect to a mailbox (mirrors email_inbox_connect)."""
-    return _stub_session()
+    input_data = params.get("input", params)
+    return sessions.connect(input_data)
 
 
 def _handle_disconnect(params: dict[str, Any]) -> dict[str, Any]:
     """Disconnect a session (mirrors email_inbox_disconnect)."""
+    sessions.disconnect(_session_id(params))
     return {"success": True}
 
 
 def _handle_list(params: dict[str, Any]) -> list:
     """List messages in a mailbox (mirrors email_inbox_list)."""
-    return []
+    return sessions.list_messages(_session_id(params), params.get("query"))
 
 
 def _handle_list_folders(params: dict[str, Any]) -> list:
     """List mailbox folders (mirrors email_inbox_list_folders)."""
-    return [
-        {
-            "id": "inbox",
-            "path": "INBOX",
-            "name": "INBOX",
-            "kind": "inbox",
-            "delimiter": "/",
-        },
-    ]
+    return sessions.list_folders(_session_id(params))
 
 
 def _handle_get_by_id(params: dict[str, Any]) -> dict[str, Any] | None:
     """Fetch a single message by ID (mirrors email_inbox_get_by_id)."""
-    return None
+    message_id = str(params.get("messageId") or params.get("message_id") or "")
+    return sessions.get_by_id(_session_id(params), message_id)
 
 
 def _handle_wait_for_email(params: dict[str, Any]) -> dict[str, Any]:
     """Poll for an email matching criteria (mirrors email_inbox_wait_for_email)."""
-    return {"found": False}
+    query = params.get("query") or {}
+    return sessions.wait_for_email(_session_id(params), query, params.get("options"))
 
 
 def _handle_mark_as_read(params: dict[str, Any]) -> dict[str, Any]:
     """Mark a message as read (mirrors email_inbox_mark_as_read)."""
+    message_id = str(params.get("messageId") or params.get("message_id") or "")
+    sessions.mark_as_read(_session_id(params), message_id)
     return {"success": True}
 
 
 def _handle_delete(params: dict[str, Any]) -> dict[str, Any]:
     """Delete a message (mirrors email_inbox_delete)."""
+    message_id = str(params.get("messageId") or params.get("message_id") or "")
+    sessions.delete_message(_session_id(params), message_id)
     return {"success": True}
 
 
 def _handle_create_mailtm_account(params: dict[str, Any]) -> dict[str, Any]:
     """Create a random Mail.tm account (mirrors email_inbox_create_mailtm_account)."""
-    return {"email": "plugin-mailtm@example.com", "password": ""}
+    base_url = params.get("baseUrl") or params.get("base_url") or None
+    return mailtm.create_random_account(base_url)
 
 
 def _handle_get_capabilities(params: dict[str, Any]) -> dict[str, Any]:
     """Get provider capabilities (mirrors email_inbox_get_capabilities)."""
-    return dict(_CAPABILITIES)
+    return sessions.get_capabilities(_session_id(params))
 
 
 def _handle_get_provider_catalog(params: dict[str, Any]) -> list:
     """Get available email providers (mirrors email_inbox_get_provider_catalog)."""
-    return [
-        {
-            "provider": "imap",
-            "displayName": "IMAP",
-            "available": True,
-            "capabilities": dict(_CAPABILITIES),
-            "supportsProfileConnect": True,
-        },
-    ]
+    return sessions.get_provider_catalog()
 
 
 # ── Mirrored email_inbox_* profile commands ────────────────────────────────
@@ -262,7 +318,13 @@ def _handle_delete_profile(params: dict[str, Any]) -> bool:
 
 def _handle_connect_profile(params: dict[str, Any]) -> dict[str, Any]:
     """Connect using a saved profile (mirrors email_inbox_connect_profile)."""
-    return _stub_session()
+    pid = str(params.get("profileId") or params.get("profile_id") or "")
+    if not ctx.db_path or not pid:
+        raise ValueError("profile id is required")
+    profile = storage.get_profile(ctx.db_path, pid, owner_id=_uid(params))
+    if not profile:
+        raise ValueError(f"profile not found: {pid}")
+    return sessions.connect(profile.get("connectInput") or {})
 
 
 def _handle_get_sync_state(params: dict[str, Any]) -> dict[str, Any] | None:
