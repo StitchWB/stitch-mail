@@ -2,7 +2,7 @@
   "schema": "stitch.plugin/v2",
   "id": "stitch-mail",
   "name": "Stitch Mail",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "service": "mail",
   "kind": "service",
   "engine": {
@@ -214,6 +214,13 @@
     }
   ],
   "changelog": [
+    {
+      "version": "0.2.0",
+      "date": "2026-10-09",
+      "changes": [
+        "Real IMAP and Mail.tm port; SPI verification restored"
+      ]
+    },
     {
       "version": "0.1.0",
       "date": "2026-08-22",
